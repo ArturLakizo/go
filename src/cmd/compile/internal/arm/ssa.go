@@ -121,7 +121,7 @@ func genregshift(s *gc.SSAGenState, as obj.As, r0, r1, r2, r int16, typ int64) *
 
 func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 	switch v.Op {
-	case ssa.OpCopy, ssa.OpARMMOVWconvert, ssa.OpARMMOVWreg:
+	case ssa.OpCopy, ssa.OpARMMOVWreg:
 		if v.Type.IsMemory() {
 			return
 		}
@@ -795,6 +795,10 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.From.Type = obj.TYPE_ADDR
 		p.From.Offset = -gc.Ctxt.FixedFrameSize()
 		p.From.Name = obj.NAME_PARAM
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+	case ssa.OpARMLoweredGetCallerPC:
+		p := s.Prog(obj.AGETCALLERPC)
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
 	case ssa.OpARMFlagEQ,

@@ -34,19 +34,18 @@ var (
 
 var canCancelIO bool // determines if CancelIoEx API is present
 
-// This package uses SetFileCompletionNotificationModes Windows API
-// to skip calling GetQueuedCompletionStatus if an IO operation completes
-// synchronously. Unfortuently SetFileCompletionNotificationModes is not
-// available on Windows XP. Also there is a known bug where
-// SetFileCompletionNotificationModes crashes on some systems
-// (see http://support.microsoft.com/kb/2568167 for details).
+// This package uses the SetFileCompletionNotificationModes Windows
+// API to skip calling GetQueuedCompletionStatus if an IO operation
+// completes synchronously. There is a known bug where
+// SetFileCompletionNotificationModes crashes on some systems (see
+// https://support.microsoft.com/kb/2568167 for details).
 
 var useSetFileCompletionNotificationModes bool // determines is SetFileCompletionNotificationModes is present and safe to use
 
 // checkSetFileCompletionNotificationModes verifies that
 // SetFileCompletionNotificationModes Windows API is present
 // on the system and is safe to use.
-// See http://support.microsoft.com/kb/2568167 for details.
+// See https://support.microsoft.com/kb/2568167 for details.
 func checkSetFileCompletionNotificationModes() {
 	err := syscall.LoadSetFileCompletionNotificationModes()
 	if err != nil {
@@ -383,7 +382,7 @@ func (fd *FD) Init(net string, pollable bool) (string, error) {
 		// We do not use events, so we can skip them always.
 		flags := uint8(syscall.FILE_SKIP_SET_EVENT_ON_HANDLE)
 		// It's not safe to skip completion notifications for UDP:
-		// http://blogs.technet.com/b/winserverperformance/archive/2008/06/26/designing-applications-for-high-performance-part-iii.aspx
+		// https://blogs.technet.com/b/winserverperformance/archive/2008/06/26/designing-applications-for-high-performance-part-iii.aspx
 		if net == "tcp" {
 			flags |= syscall.FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
 		}
@@ -946,11 +945,13 @@ func (fd *FD) RawWrite(f func(uintptr) bool) error {
 		return err
 	}
 	defer fd.writeUnlock()
-	for {
-		if f(uintptr(fd.Sysfd)) {
-			return nil
-		}
+
+	if f(uintptr(fd.Sysfd)) {
+		return nil
 	}
+
+	// TODO(tmm1): find a way to detect socket writability
+	return syscall.EWINDOWS
 }
 
 func sockaddrToRaw(sa syscall.Sockaddr) (unsafe.Pointer, int32, error) {

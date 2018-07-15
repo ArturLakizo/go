@@ -252,7 +252,6 @@ func transformclosure(xfunc *Node) {
 			decls = append(decls, v)
 
 			fld := types.NewField()
-			fld.Funarg = types.FunargParams
 			fld.Nname = asTypesNode(v)
 			fld.Type = v.Type
 			fld.Sym = v.Sym
@@ -441,6 +440,8 @@ func makepartialcall(fn *Node, t0 *types.Type, meth *types.Sym) *Node {
 	xfunc := dclfunc(sym, tfn)
 	xfunc.Func.SetDupok(true)
 	xfunc.Func.SetNeedctxt(true)
+
+	tfn.Type.SetPkg(t0.Pkg())
 
 	// Declare and initialize variable holding receiver.
 

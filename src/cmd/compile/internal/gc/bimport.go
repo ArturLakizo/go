@@ -197,6 +197,7 @@ func Import(imp *types.Pkg, in *bufio.Reader) {
 				Cost: int32(inlCost),
 				Body: body,
 			}
+			importlist = append(importlist, f)
 			if Debug['E'] > 0 && Debug['m'] > 2 {
 				if Debug['m'] > 3 {
 					fmt.Printf("inl body for %v: %+v\n", f, asNodes(body))
@@ -351,13 +352,13 @@ func (p *importer) obj(tag int) {
 		sym := p.qualifiedName()
 		typ := p.typ()
 		val := p.value(typ)
-		importconst(pos, p.imp, sym, idealType(typ), val)
+		importconst(p.imp, pos, sym, idealType(typ), val)
 
 	case aliasTag:
 		pos := p.pos()
 		sym := p.qualifiedName()
 		typ := p.typ()
-		importalias(pos, p.imp, sym, typ)
+		importalias(p.imp, pos, sym, typ)
 
 	case typeTag:
 		p.typ()
@@ -366,7 +367,7 @@ func (p *importer) obj(tag int) {
 		pos := p.pos()
 		sym := p.qualifiedName()
 		typ := p.typ()
-		importvar(pos, p.imp, sym, typ)
+		importvar(p.imp, pos, sym, typ)
 
 	case funcTag:
 		pos := p.pos()
@@ -375,28 +376,8 @@ func (p *importer) obj(tag int) {
 		result := p.paramList()
 
 		sig := functypefield(nil, params, result)
-		importsym(p.imp, sym, ONAME)
-		if old := asNode(sym.Def); old != nil && old.Op == ONAME {
-			// function was imported before (via another import)
-			if !eqtype(sig, old.Type) {
-				p.formatErrorf("inconsistent definition for func %v during import\n\t%v\n\t%v", sym, old.Type, sig)
-			}
-			n := asNode(old.Type.Nname())
-			p.funcList = append(p.funcList, n)
-			break
-		}
-
-		n := newfuncnamel(pos, sym)
-		n.Type = sig
-		declare(n, PFUNC)
-		p.funcList = append(p.funcList, n)
-		importlist = append(importlist, n)
-
-		sig.SetNname(asTypesNode(n))
-
-		if Debug['E'] > 0 {
-			fmt.Printf("import [%q] func %v \n", p.imp.Path, n)
-		}
+		importfunc(p.imp, pos, sym, sig)
+		p.funcList = append(p.funcList, asNode(sym.Def))
 
 	default:
 		p.formatErrorf("unexpected object (tag = %d)", tag)
@@ -468,10 +449,7 @@ func (p *importer) newtyp(etype types.EType) *types.Type {
 // importtype declares that pt, an imported named type, has underlying type t.
 func (p *importer) importtype(pt, t *types.Type) {
 	if pt.Etype == TFORW {
-		copytype(asNode(pt.Nod), t)
-		pt.Sym.Importdef = p.imp
-		pt.Sym.Lastlineno = lineno
-		declare(asNode(pt.Nod), PEXTERN)
+		copytype(typenod(pt), t)
 		checkwidth(pt)
 	} else {
 		// pt.Orig and t must be identical.
@@ -503,7 +481,7 @@ func (p *importer) typ() *types.Type {
 		pos := p.pos()
 		tsym := p.qualifiedName()
 
-		t = pkgtype(pos, p.imp, tsym)
+		t = importtype(p.imp, pos, tsym)
 		p.typList = append(p.typList, t)
 		dup := !t.IsKind(types.TFORW) // type already imported
 
@@ -552,7 +530,6 @@ func (p *importer) typ() *types.Type {
 			n.SetClass(PFUNC)
 			checkwidth(n.Type)
 			p.funcList = append(p.funcList, n)
-			importlist = append(importlist, n)
 
 			// (comment from parser.go)
 			// inl.C's inlnode in on a dotmeth node expects to find the inlineable body as
@@ -610,7 +587,7 @@ func (p *importer) typ() *types.Type {
 		t = p.newtyp(TMAP)
 		mt := t.MapType()
 		mt.Key = p.typ()
-		mt.Val = p.typ()
+		mt.Elem = p.typ()
 
 	case chanTag:
 		t = p.newtyp(TCHAN)
@@ -665,8 +642,8 @@ func (p *importer) field() *types.Field {
 		f.Embedded = 1
 	}
 
+	f.Pos = pos
 	f.Sym = sym
-	f.Nname = asTypesNode(newnamel(pos, sym))
 	f.Type = typ
 	f.Note = note
 
@@ -676,8 +653,7 @@ func (p *importer) field() *types.Field {
 func (p *importer) methodList() (methods []*types.Field) {
 	for n := p.int(); n > 0; n-- {
 		f := types.NewField()
-		f.Nname = asTypesNode(newname(nblank.Sym))
-		asNode(f.Nname).Pos = p.pos()
+		f.Pos = p.pos()
 		f.Type = p.typ()
 		methods = append(methods, f)
 	}
@@ -696,8 +672,8 @@ func (p *importer) method() *types.Field {
 	result := p.paramList()
 
 	f := types.NewField()
+	f.Pos = pos
 	f.Sym = sym
-	f.Nname = asTypesNode(newnamel(pos, sym))
 	f.Type = functypefield(fakeRecvField(), params, result)
 	return f
 }
@@ -766,6 +742,8 @@ func (p *importer) paramList() []*types.Field {
 
 func (p *importer) param(named bool) *types.Field {
 	f := types.NewField()
+	// TODO(mdempsky): Need param position.
+	f.Pos = lineno
 	f.Type = p.typ()
 	if f.Type.Etype == TDDDFIELD {
 		// TDDDFIELD indicates wrapped ... slice type
@@ -785,8 +763,6 @@ func (p *importer) param(named bool) *types.Field {
 			pkg = p.pkg()
 		}
 		f.Sym = pkg.Lookup(name)
-		// TODO(mdempsky): Need param position.
-		f.Nname = asTypesNode(newname(f.Sym))
 	}
 
 	// TODO(gri) This is compiler-specific (escape info).
@@ -1233,7 +1209,7 @@ func (p *importer) exprsOrNil() (a, b *Node) {
 		a = p.expr()
 	}
 	if ab&2 != 0 {
-		b = p.expr()
+		b = p.node()
 	}
 	return
 }

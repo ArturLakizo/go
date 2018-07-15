@@ -464,23 +464,23 @@ func (p *exporter) markType(t *types.Type) {
 	}
 
 	// Recursively mark any types that can be produced given a
-	// value of type t: dereferencing a pointer; indexing an
-	// array, slice, or map; receiving from a channel; accessing a
-	// struct field or interface method; or calling a function.
+	// value of type t: dereferencing a pointer; indexing or
+	// iterating over an array, slice, or map; receiving from a
+	// channel; accessing a struct field or interface method; or
+	// calling a function.
 	//
-	// Notably, we don't mark map key or function parameter types,
-	// because the user already needs some way to construct values
-	// of those types.
-	//
-	// It's not critical for correctness that this algorithm is
-	// perfect. Worst case, we might miss opportunities to inline
-	// some function calls in downstream packages.
+	// Notably, we don't mark function parameter types, because
+	// the user already needs some way to construct values of
+	// those types.
 	switch t.Etype {
 	case TPTR32, TPTR64, TARRAY, TSLICE, TCHAN:
+		// TODO(mdempsky): Skip marking element type for
+		// send-only channels?
 		p.markType(t.Elem())
 
 	case TMAP:
-		p.markType(t.Val())
+		p.markType(t.Key())
+		p.markType(t.Elem())
 
 	case TSTRUCT:
 		for _, f := range t.FieldSlice() {
@@ -736,7 +736,7 @@ func (p *exporter) typ(t *types.Type) {
 				Fatalf("invalid symbol name: %s (%v)", m.Sym.Name, m.Sym)
 			}
 
-			p.pos(asNode(m.Nname).Pos)
+			p.pos(m.Pos)
 			p.fieldSym(m.Sym, false)
 
 			sig := m.Type
@@ -798,7 +798,7 @@ func (p *exporter) typ(t *types.Type) {
 	case TMAP:
 		p.tag(mapTag)
 		p.typ(t.Key())
-		p.typ(t.Val())
+		p.typ(t.Elem())
 
 	case TCHAN:
 		p.tag(chanTag)
@@ -831,7 +831,7 @@ func (p *exporter) fieldList(t *types.Type) {
 }
 
 func (p *exporter) field(f *types.Field) {
-	p.pos(asNode(f.Nname).Pos)
+	p.pos(f.Pos)
 	p.fieldName(f)
 	p.typ(f.Type)
 	p.string(f.Note)
@@ -856,7 +856,7 @@ func (p *exporter) methodList(t *types.Type) {
 		if p.trace {
 			p.tracef("\n")
 		}
-		p.pos(asNode(m.Nname).Pos)
+		p.pos(m.Pos)
 		p.typ(m.Type)
 	}
 	if p.trace && len(embeddeds) > 0 {
@@ -879,11 +879,7 @@ func (p *exporter) methodList(t *types.Type) {
 }
 
 func (p *exporter) method(m *types.Field) {
-	if m.Nname != nil {
-		p.pos(asNode(m.Nname).Pos)
-	} else {
-		p.pos(src.NoXPos)
-	}
+	p.pos(m.Pos)
 	p.methodName(m.Sym)
 	p.paramList(m.Type.Params(), false)
 	p.paramList(m.Type.Results(), false)
@@ -1001,29 +997,13 @@ func (p *exporter) param(q *types.Field, n int, numbered bool) {
 }
 
 func parName(f *types.Field, numbered bool) string {
-	s := f.Sym
+	s := origSym(f.Sym)
 	if s == nil {
 		return ""
 	}
 
-	// Take the name from the original, lest we substituted it with ~r%d or ~b%d.
-	// ~r%d is a (formerly) unnamed result.
-	if asNode(f.Nname) != nil {
-		if asNode(f.Nname).Orig == nil {
-			return "" // s = nil
-		}
-		s = asNode(f.Nname).Orig.Sym
-		if s != nil && s.Name[0] == '~' {
-			if s.Name[1] == 'r' { // originally an unnamed result
-				return "" // s = nil
-			} else if s.Name[1] == 'b' { // originally the blank identifier _
-				return "_" // belongs to localpkg
-			}
-		}
-	}
-
-	if s == nil {
-		return ""
+	if s.Name == "_" {
+		return "_"
 	}
 
 	// print symbol with Vargen number or not as desired
@@ -1036,8 +1016,8 @@ func parName(f *types.Field, numbered bool) string {
 	// from other names in their context after inlining (i.e., the parameter numbering
 	// is a form of parameter rewriting). See issue 4326 for an example and test case.
 	if numbered {
-		if !strings.Contains(name, "·") && asNode(f.Nname) != nil && asNode(f.Nname).Name != nil && asNode(f.Nname).Name.Vargen > 0 {
-			name = fmt.Sprintf("%s·%d", name, asNode(f.Nname).Name.Vargen) // append Vargen
+		if n := asNode(f.Nname); !strings.Contains(name, "·") && n != nil && n.Name.Vargen > 0 {
+			name = fmt.Sprintf("%s·%d", name, n.Name.Vargen) // append Vargen
 		}
 	} else {
 		if i := strings.Index(name, "·"); i > 0 {
@@ -1151,14 +1131,18 @@ func (p *exporter) stmtList(list Nodes) {
 		}
 		// TODO inlining produces expressions with ninits. we can't export these yet.
 		// (from fmt.go:1461ff)
-		if opprec[n.Op] < 0 {
-			p.stmt(n)
-		} else {
-			p.expr(n)
-		}
+		p.node(n)
 	}
 
 	p.op(OEND)
+}
+
+func (p *exporter) node(n *Node) {
+	if opprec[n.Op] < 0 {
+		p.stmt(n)
+	} else {
+		p.expr(n)
+	}
 }
 
 func (p *exporter) exprList(list Nodes) {
@@ -1575,7 +1559,7 @@ func (p *exporter) exprsOrNil(a, b *Node) {
 		p.expr(a)
 	}
 	if ab&2 != 0 {
-		p.expr(b)
+		p.node(b)
 	}
 }
 

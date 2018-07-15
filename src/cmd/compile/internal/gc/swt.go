@@ -241,6 +241,11 @@ func walkswitch(sw *Node) {
 // search using if..goto, although binary search
 // is used with long runs of constants.
 func (s *exprSwitch) walk(sw *Node) {
+	// Guard against double walk, see #25776.
+	if sw.List.Len() == 0 && sw.Nbody.Len() > 0 {
+		Fatalf("second walk of switch")
+	}
+
 	casebody(sw, nil)
 
 	cond := sw.Left
@@ -251,6 +256,34 @@ func (s *exprSwitch) walk(sw *Node) {
 		s.kind = switchKindTrue
 		if !cond.Val().U.(bool) {
 			s.kind = switchKindFalse
+		}
+	}
+
+	// Given "switch string(byteslice)",
+	// with all cases being constants (or the default case),
+	// use a zero-cost alias of the byte slice.
+	// In theory, we could be more aggressive,
+	// allowing any side-effect-free expressions in cases,
+	// but it's a bit tricky because some of that information
+	// is unavailable due to the introduction of temporaries during order.
+	// Restricting to constants is simple and probably powerful enough.
+	// Do this before calling walkexpr on cond,
+	// because walkexpr will lower the string
+	// conversion into a runtime call.
+	// See issue 24937 for more discussion.
+	if cond.Op == OARRAYBYTESTR {
+		ok := true
+		for _, cas := range sw.List.Slice() {
+			if cas.Op != OCASE {
+				Fatalf("switch string(byteslice) bad op: %v", cas.Op)
+			}
+			if cas.Left != nil && !Isconst(cas.Left, CTSTR) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			cond.Op = OARRAYBYTESTRTMP
 		}
 	}
 

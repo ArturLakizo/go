@@ -612,7 +612,6 @@ func eqtype1(t1, t2 *types.Type, cmpTags bool, assumedEqual map[typePair]struct{
 		if !eqtype1(t1.Key(), t2.Key(), cmpTags, assumedEqual) {
 			return false
 		}
-		return eqtype1(t1.Val(), t2.Val(), cmpTags, assumedEqual)
 	}
 
 	return eqtype1(t1.Elem(), t2.Elem(), cmpTags, assumedEqual)
@@ -1581,20 +1580,15 @@ func structargs(tl *types.Type, mustname bool) []*Node {
 	var args []*Node
 	gen := 0
 	for _, t := range tl.Fields().Slice() {
-		var n *Node
-		if mustname && (t.Sym == nil || t.Sym.Name == "_") {
+		s := t.Sym
+		if mustname && (s == nil || s.Name == "_") {
 			// invent a name so that we can refer to it in the trampoline
-			buf := fmt.Sprintf(".anon%d", gen)
+			s = lookupN(".anon", gen)
 			gen++
-			n = newname(lookup(buf))
-		} else if t.Sym != nil {
-			n = newname(t.Sym)
 		}
-		a := nod(ODCLFIELD, n, typenod(t.Type))
+		a := symfield(s, t.Type)
+		a.Pos = t.Pos
 		a.SetIsddd(t.Isddd())
-		if n != nil {
-			n.SetIsddd(t.Isddd())
-		}
 		args = append(args, a)
 	}
 
@@ -1711,7 +1705,13 @@ func genwrapper(rcvr *types.Type, method *types.Field, newnam *types.Sym) {
 	Curfn = fn
 	typecheckslice(fn.Nbody.Slice(), Etop)
 
-	inlcalls(fn)
+	// TODO(mdempsky): Investigate why this doesn't work with
+	// indexed export. For now, we disable even in non-indexed
+	// mode to ensure fair benchmark comparisons and to track down
+	// unintended compilation differences.
+	if false {
+		inlcalls(fn)
+	}
 	escAnalyze([]*Node{fn}, false)
 
 	Curfn = nil

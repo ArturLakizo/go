@@ -53,7 +53,7 @@ type Sig struct {
 // the given map type. This type is not visible to users -
 // we include only enough information to generate a correct GC
 // program for it.
-// Make sure this stays in sync with ../../../../runtime/map.go!
+// Make sure this stays in sync with runtime/map.go.
 const (
 	BUCKETSIZE = 8
 	MAXKEYSIZE = 128
@@ -85,7 +85,7 @@ func bmap(t *types.Type) *types.Type {
 
 	bucket := types.New(TSTRUCT)
 	keytype := t.Key()
-	valtype := t.Val()
+	valtype := t.Elem()
 	dowidth(keytype)
 	dowidth(valtype)
 	if keytype.Width > MAXKEYSIZE {
@@ -137,7 +137,7 @@ func bmap(t *types.Type) *types.Type {
 	// buckets can be marked as having no pointers.
 	// Arrange for the bucket to have no pointers by changing
 	// the type of the overflow field to uintptr in this case.
-	// See comment on hmap.overflow in ../../../../runtime/map.go.
+	// See comment on hmap.overflow in runtime/map.go.
 	otyp := types.NewPtr(bucket)
 	if !types.Haspointers(valtype) && !types.Haspointers(keytype) {
 		otyp = types.Types[TUINTPTR]
@@ -172,7 +172,7 @@ func bmap(t *types.Type) *types.Type {
 	if t.Key().Width > MAXKEYSIZE && !keytype.IsPtr() {
 		Fatalf("key indirect incorrect for %v", t)
 	}
-	if t.Val().Width > MAXVALSIZE && !valtype.IsPtr() {
+	if t.Elem().Width > MAXVALSIZE && !valtype.IsPtr() {
 		Fatalf("value indirect incorrect for %v", t)
 	}
 	if keytype.Width%int64(keytype.Align) != 0 {
@@ -207,7 +207,7 @@ func bmap(t *types.Type) *types.Type {
 }
 
 // hmap builds a type representing a Hmap structure for the given map type.
-// Make sure this stays in sync with ../../../../runtime/map.go.
+// Make sure this stays in sync with runtime/map.go.
 func hmap(t *types.Type) *types.Type {
 	if t.MapType().Hmap != nil {
 		return t.MapType().Hmap
@@ -227,7 +227,7 @@ func hmap(t *types.Type) *types.Type {
 	//    nevacuate  uintptr
 	//    extra      unsafe.Pointer // *mapextra
 	// }
-	// must match ../../../../runtime/map.go:hmap.
+	// must match runtime/map.go:hmap.
 	fields := []*types.Field{
 		makefield("count", types.Types[TINT]),
 		makefield("flags", types.Types[TUINT8]),
@@ -257,7 +257,7 @@ func hmap(t *types.Type) *types.Type {
 }
 
 // hiter builds a type representing an Hiter structure for the given map type.
-// Make sure this stays in sync with ../../../../runtime/map.go.
+// Make sure this stays in sync with runtime/map.go.
 func hiter(t *types.Type) *types.Type {
 	if t.MapType().Hiter != nil {
 		return t.MapType().Hiter
@@ -284,10 +284,10 @@ func hiter(t *types.Type) *types.Type {
 	//    bucket      uintptr
 	//    checkBucket uintptr
 	// }
-	// must match ../../../../runtime/map.go:hiter.
+	// must match runtime/map.go:hiter.
 	fields := []*types.Field{
-		makefield("key", types.NewPtr(t.Key())), // Used in range.go for TMAP.
-		makefield("val", types.NewPtr(t.Val())), // Used in range.go for TMAP.
+		makefield("key", types.NewPtr(t.Key())),  // Used in range.go for TMAP.
+		makefield("val", types.NewPtr(t.Elem())), // Used in range.go for TMAP.
 		makefield("t", types.Types[TUNSAFEPTR]),
 		makefield("h", types.NewPtr(hmap)),
 		makefield("buckets", types.NewPtr(bmap)),
@@ -321,22 +321,19 @@ func hiter(t *types.Type) *types.Type {
 func methodfunc(f *types.Type, receiver *types.Type) *types.Type {
 	var in []*Node
 	if receiver != nil {
-		d := nod(ODCLFIELD, nil, nil)
-		d.Type = receiver
+		d := anonfield(receiver)
 		in = append(in, d)
 	}
 
 	for _, t := range f.Params().Fields().Slice() {
-		d := nod(ODCLFIELD, nil, nil)
-		d.Type = t.Type
+		d := anonfield(t.Type)
 		d.SetIsddd(t.Isddd())
 		in = append(in, d)
 	}
 
 	var out []*Node
 	for _, t := range f.Results().Fields().Slice() {
-		d := nod(ODCLFIELD, nil, nil)
-		d.Type = t.Type
+		d := anonfield(t.Type)
 		out = append(out, d)
 	}
 
@@ -961,6 +958,12 @@ func typesymprefix(prefix string, t *types.Type) *types.Sym {
 	p := prefix + "." + t.ShortString()
 	s := typeLookup(p)
 
+	// This function is for looking up type-related generated functions
+	// (e.g. eq and hash). Make sure they are indeed generated.
+	signatsetmu.Lock()
+	addsignat(t)
+	signatsetmu.Unlock()
+
 	//print("algsym: %s -> %+S\n", p, s);
 
 	return s
@@ -1248,14 +1251,12 @@ func dtypesym(t *types.Type) *obj.LSym {
 	// ../../../../runtime/type.go:/mapType
 	case TMAP:
 		s1 := dtypesym(t.Key())
-		s2 := dtypesym(t.Val())
+		s2 := dtypesym(t.Elem())
 		s3 := dtypesym(bmap(t))
-		s4 := dtypesym(hmap(t))
 		ot = dcommontype(lsym, t)
 		ot = dsymptr(lsym, ot, s1, 0)
 		ot = dsymptr(lsym, ot, s2, 0)
 		ot = dsymptr(lsym, ot, s3, 0)
-		ot = dsymptr(lsym, ot, s4, 0)
 		if t.Key().Width > MAXKEYSIZE {
 			ot = duint8(lsym, ot, uint8(Widthptr))
 			ot = duint8(lsym, ot, 1) // indirect
@@ -1264,11 +1265,11 @@ func dtypesym(t *types.Type) *obj.LSym {
 			ot = duint8(lsym, ot, 0) // not indirect
 		}
 
-		if t.Val().Width > MAXVALSIZE {
+		if t.Elem().Width > MAXVALSIZE {
 			ot = duint8(lsym, ot, uint8(Widthptr))
 			ot = duint8(lsym, ot, 1) // indirect
 		} else {
-			ot = duint8(lsym, ot, uint8(t.Val().Width))
+			ot = duint8(lsym, ot, uint8(t.Elem().Width))
 			ot = duint8(lsym, ot, 0) // not indirect
 		}
 
